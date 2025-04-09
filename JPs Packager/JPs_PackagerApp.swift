@@ -13,5 +13,7 @@ struct JPs_PackagerApp: App {
         WindowGroup {
             ContentView()
         }
+        
+        .defaultSize(width: 800, height: 600)
     }
 }
