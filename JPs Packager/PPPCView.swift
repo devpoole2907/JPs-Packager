@@ -7,8 +7,75 @@
 
 import SwiftUI
 
+enum PPPCAuth: String, CaseIterable, Codable, Identifiable {
+    case none = ""
+    case allow = "Allow"
+    case deny = "Deny"
+    case allowStandardUserToSetSystemService = "AllowStandardUserToSetSystemService"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none: return "-"
+        case .allow: return "Allow"
+        case .deny: return "Deny"
+        case .allowStandardUserToSetSystemService: return "Allow Standard Users to Approve"
+        }
+    }
+}
+
+struct PPPCPermission: Identifiable, Hashable, Codable {
+    let id = UUID()
+    var service: String
+    var auth: PPPCAuth = .none
+    var comment: String = ""
+    
+    enum CodingKeys: String, CodingKey {
+        case service
+        case auth
+        case comment
+    }
+
+    var displayName: String {
+        pppcServiceDisplayNames[service] ?? service
+    }
+}
+
+let pppcServiceDisplayNames: [String: String] = [
+    "Accessibility": "Accessibility",
+    "SystemPolicySysAdminFiles": "Admin Files",
+    "Calendar": "Calendars",
+    "Camera": "Camera",
+    "AddressBook": "Contacts",
+    "SystemPolicyDesktopFolder": "Desktop Folder Access",
+    "SystemPolicyDocumentsFolder": "Documents Folder Access",
+    "SystemPolicyDownloadsFolder": "Downloads Folder Access",
+    "FileProviderPresence": "File Provider Presence",
+    "SystemPolicyAllFiles": "Full Disk Access",
+    "ListenEvent": "Input Monitoring",
+    "MediaLibrary": "Media Library",
+    "Microphone": "Microphone",
+    "SystemPolicyNetworkVolumes": "Network Volumes",
+    "Photos": "Photos",
+    "PostEvent": "Post Events",
+    "Reminders": "Reminders",
+    "SystemPolicyRemovableVolumes": "Removable Volumes",
+    "ScreenCapture": "Screen Recording",
+    "SpeechRecognition": "Speech Recognition"
+]
+
 struct PPPCView: View {
     @EnvironmentObject var viewModel: PPPCViewModel
+    @State private var permissionsExpanded = true
+    @State private var selectedAppID: UUID?
+
+    private var selectedApp: AppInfo? {
+        if let id = selectedAppID {
+            return viewModel.apps.first { $0.id == id }
+        }
+        return nil
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -21,14 +88,18 @@ struct PPPCView: View {
                     }
 
                     Button(action: {
-                        viewModel.removeSelectedApp()
+                        if let app = selectedApp {
+                            viewModel.remove(app: app)
+                            // update selection
+                            selectedAppID = viewModel.apps.first?.id
+                        }
                     }) {
                         Image(systemName: "minus")
                     }
                 }
                 .padding()
 
-                List(selection: $viewModel.selectedApp) {
+                List(selection: $selectedAppID) {
                     ForEach(viewModel.apps) { app in
                         HStack {
                             Image(nsImage: app.icon)
@@ -36,7 +107,7 @@ struct PPPCView: View {
                                 .frame(width: 24, height: 24)
                             Text(app.displayName)
                         }
-                        .tag(app)
+                        .tag(app.id)          // tag with UUID
                     }
                 }
                 .listStyle(.sidebar)
@@ -45,25 +116,8 @@ struct PPPCView: View {
                 }
             }
         } detail: {
-            if let app = viewModel.selectedApp {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(nsImage: app.icon)
-                        .resizable()
-                        .frame(width: 64, height: 64)
-                        .cornerRadius(12)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.displayName)
-                            .font(.largeTitle)
-                            .bold()
-                            .padding(.bottom, 4)
-                        selectableText(title: "App Path:", content: app.url.path)
-                        selectableText(title: "Bundle ID:", content: app.bundleID)
-                        selectableText(title: "Code Requirement:", content: app.codeRequirement, minHeight: 100)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+            if let app = selectedApp {
+                PPPCDetailView(app: app, permissionsExpanded: $permissionsExpanded)
             } else {
                 Text("Drag apps on the left or select one")
                     .italic()
@@ -73,6 +127,16 @@ struct PPPCView: View {
         }
         .frame(minWidth: 600, minHeight: 300)
         .navigationTitle("Privacy Preferences Policy Control Center")
+        .toolbar {
+            ToolbarItemGroup {
+                Button("Import") {
+                    // TODO: Implement import action
+                }
+                Button("Export") {
+                    // TODO: Implement export action
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -99,26 +163,25 @@ struct PPPCView: View {
 
 class PPPCViewModel: ObservableObject {
     @Published var apps: [AppInfo] = []
-    @Published var selectedApp: AppInfo?
     @Published var dropTargeted = false
 
     func addApp(from url: URL) {
         let bid = getBundleID(from: url)
         let req = getCodeRequirement(from: url)
         let icon = NSWorkspace.shared.icon(forFile: url.path)
-        let info = AppInfo(url: url, bundleID: bid, codeRequirement: req, icon: icon)
+        let permissions = pppcServiceDisplayNames
+            .keys
+            .sorted { (pppcServiceDisplayNames[$0] ?? "") < (pppcServiceDisplayNames[$1] ?? "") }
+            .map { PPPCPermission(service: $0) }
+        let info = AppInfo(url: url, bundleID: bid, codeRequirement: req, icon: icon, permissions: permissions)
         if !apps.contains(info) {
             apps.append(info)
         }
-        if selectedApp == nil {
-            selectedApp = info
-        }
     }
 
-    func removeSelectedApp() {
-        if let selectedApp = selectedApp, let index = apps.firstIndex(of: selectedApp) {
-            apps.remove(at: index)
-            self.selectedApp = apps.isEmpty ? nil : apps.first
+    func remove(app: AppInfo) {
+        if let idx = apps.firstIndex(of: app) {
+            apps.remove(at: idx)
         }
     }
 
@@ -176,5 +239,71 @@ class PPPCViewModel: ObservableObject {
             }
         }
         return true
+    }
+}
+
+struct PPPCDetailView: View {
+    @ObservedObject var app: AppInfo
+    @Binding var permissionsExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            
+            HStack(alignment: .center, spacing: 12) {
+                Image(nsImage: app.icon)
+                    .resizable()
+                    .frame(width: 64, height: 64)
+                    .cornerRadius(12)
+
+                Text(app.displayName)
+                    .font(.largeTitle)
+                    .bold()
+            }.padding()
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    selectableText(title: "App Path:", content: app.url.path)
+                    selectableText(title: "Bundle ID:", content: app.bundleID)
+                    selectableText(title: "Code Requirement:", content: app.codeRequirement)
+
+                    DisclosureGroup("Permissions", isExpanded: $permissionsExpanded) {
+                        ForEach(app.permissions.indices, id: \.self) { idx in
+                            HStack {
+                                Text(app.permissions[idx].displayName)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Picker("", selection: $app.permissions[idx].auth) {
+                                    ForEach(PPPCAuth.allCases) { auth in
+                                        Text(auth.displayName).tag(auth)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 250)
+                            }
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                    .font(.headline)
+                }
+                .padding()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func selectableText(title: String, content: String, minHeight: CGFloat = 30) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextEditor(text: .constant(content))
+                .font(.body)
+                .frame(minHeight: minHeight, maxHeight: minHeight)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+        }
     }
 }
